@@ -275,7 +275,6 @@ def display_chat_history():
                 if message["audio_path"]:
                     st.audio(message["audio_path"], format="audio/mp3", start_time=0)
 
-
 def get_conversation_context():
     """Get recent conversation context to understand if confusion is in educational context"""
     if len(st.session_state.chat_history) >= 2:
@@ -284,99 +283,6 @@ def get_conversation_context():
         recent_text = " ".join([msg["content"] for msg in recent_messages])
         return recent_text
     return None
-
-# --- Main Streamlit UI ---
-st.title("🎓 AI Tutor - Learn with Guidance")
-
-# Initialize session state
-initialize_session_state()
-
-# Sidebar for PDF upload
-with st.sidebar:
-    st.header("📚 Course Material")
-    uploaded_file = st.file_uploader("Upload your course PDF", type=["pdf"])
-
-    # Fixed similarity threshold
-    similarity_threshold = 0.15
-
-    if uploaded_file:
-        if st.session_state.chunks is None or st.session_state.uploaded_file_name != uploaded_file.name:
-            st.session_state.uploaded_file_name = uploaded_file.name # Store file name to detect new upload
-            with st.spinner("Processing your PDF..."):
-                full_text = extract_text_from_pdf(uploaded_file)
-                st.session_state.chunks = chunk_text(full_text)
-                st.session_state.embeddings = embed_chunks(st.session_state.chunks)
-            st.success("✅ PDF processed successfully!")
-        else:
-            st.success("✅ PDF ready!")
-
-    if st.button("🗑️ Clear Chat History"):
-        st.session_state.chat_history = []
-        st.session_state.last_topic_context = None
-        st.rerun()
-
-    st.subheader("🗣️ Interface Mode")
-    st.session_state.voice_mode = st.toggle("Enable Voice Mode", value=st.session_state.voice_mode,
-                                            help="Toggle between typing and speaking to the tutor.")
-
-# Main chat interface
-if uploaded_file and st.session_state.chunks is not None:
-    st.markdown("### 💬 Chat with your AI Tutor")
-
-    # Display chat history
-    chat_container = st.container()
-    with chat_container:
-        display_chat_history()
-
-    user_input = None
-    user_audio_bytes = None # Store raw audio bytes for user input history
-
-    if st.session_state.voice_mode:
-        st.info("🎙️ Speak your question after pressing 'Record'.")
-        audio_input = st_mic_recorder.mic_recorder(start_prompt="🔴 Record", stop_prompt="⏹ Stop", key="voice_recorder")
-        if audio_input:
-            with st.spinner("Transcribing audio..."):
-                user_input = transcribe_audio(audio_input["bytes"])
-                user_audio_bytes = audio_input["bytes"] # Store raw bytes for playback in history
-            st.write(f"You said: {user_input}") # Show transcribed text to user
-
-            # Immediately process the transcribed input
-            if user_input:
-                # Add user message to chat history
-                add_to_chat_history("user", user_input, user_audio_bytes)
-
-                # Call the processing logic
-                asyncio.run(process_user_input(user_input, st.session_state.chunks, st.session_state.embeddings, similarity_threshold))
-
-    else: # Text mode
-        user_input = st.chat_input("Ask me anything about your course material...")
-        if user_input:
-            # Add user message to chat history
-            add_to_chat_history("user", user_input)
-
-            # Call the processing logic
-            asyncio.run(process_user_input(user_input, st.session_state.chunks, st.session_state.embeddings, similarity_threshold))
-
-else:
-    st.info("👆 Please upload a course PDF in the sidebar to begin learning!")
-    st.markdown("""
-    ### How to use this Enhanced AI Tutor:
-
-    1.  **Upload your course material** (PDF) using the sidebar
-    2.  **Ask questions** about the content in the chat
-    3.  **Express confusion freely** - the tutor uses AI to understand if your confusion relates to the course material
-    4.  **Get personalized guidance** - the tutor provides targeted help based on the most relevant parts of your material
-    5.  **Toggle Voice Mode** - Use the toggle in the sidebar to switch between typing and speaking your questions, and hearing the tutor's responses!
-
-    **New Features:**
-    -   ✨ **Smart Context Detection**: Uses AI embeddings instead of hardcoded keywords
-    -   🎯 **Targeted Confusion Support**: Finds the most relevant content for your specific confusion
-    -   📚 **Universal Compatibility**: Works with any subject matter or course content
-    -   🎙️ **Voice Input**: Speak your questions to the tutor
-    -   🗣️ **Voice Output (Edge-TTS)**: Hear the tutor's responses with improved naturalness
-
-    **Note:** Your chat history is session-based and will be cleared when you close the browser.
-    """)
 
 # --- Centralized User Input Processing Logic ---
 async def process_user_input(user_input, chunks, embeddings, similarity_threshold):
@@ -470,3 +376,96 @@ async def process_user_input(user_input, chunks, embeddings, similarity_threshol
             audio_output_path = None # Ensure audio_output_path is None if TTS fails
 
     add_to_chat_history("assistant", response_text, audio_output_path)
+
+# --- Main Streamlit UI ---
+st.title("🎓 AI Tutor - Learn with Guidance")
+
+# Initialize session state
+initialize_session_state()
+
+# Sidebar for PDF upload
+with st.sidebar:
+    st.header("📚 Course Material")
+    uploaded_file = st.file_uploader("Upload your course PDF", type=["pdf"])
+
+    # Fixed similarity threshold
+    similarity_threshold = 0.15
+
+    if uploaded_file:
+        if st.session_state.chunks is None or st.session_state.uploaded_file_name != uploaded_file.name:
+            st.session_state.uploaded_file_name = uploaded_file.name # Store file name to detect new upload
+            with st.spinner("Processing your PDF..."):
+                full_text = extract_text_from_pdf(uploaded_file)
+                st.session_state.chunks = chunk_text(full_text)
+                st.session_state.embeddings = embed_chunks(st.session_state.chunks)
+            st.success("✅ PDF processed successfully!")
+        else:
+            st.success("✅ PDF ready!")
+
+    if st.button("🗑️ Clear Chat History"):
+        st.session_state.chat_history = []
+        st.session_state.last_topic_context = None
+        st.rerun()
+
+    st.subheader("🗣️ Interface Mode")
+    st.session_state.voice_mode = st.toggle("Enable Voice Mode", value=st.session_state.voice_mode,
+                                            help="Toggle between typing and speaking to the tutor.")
+
+# Main chat interface
+if uploaded_file and st.session_state.chunks is not None:
+    st.markdown("### 💬 Chat with your AI Tutor")
+
+    # Display chat history
+    chat_container = st.container()
+    with chat_container:
+        display_chat_history()
+
+    user_input = None
+    user_audio_bytes = None # Store raw audio bytes for user input history
+
+    if st.session_state.voice_mode:
+        st.info("🎙️ Speak your question after pressing 'Record'.")
+        audio_input = st_mic_recorder.mic_recorder(start_prompt="🔴 Record", stop_prompt="⏹ Stop", key="voice_recorder")
+        if audio_input:
+            with st.spinner("Transcribing audio..."):
+                user_input = transcribe_audio(audio_input["bytes"])
+                user_audio_bytes = audio_input["bytes"] # Store raw bytes for playback in history
+            st.write(f"You said: {user_input}") # Show transcribed text to user
+
+            # Immediately process the transcribed input
+            if user_input:
+                # Add user message to chat history
+                add_to_chat_history("user", user_input, user_audio_bytes)
+
+                # Call the processing logic
+                asyncio.run(process_user_input(user_input, st.session_state.chunks, st.session_state.embeddings, similarity_threshold))
+
+    else: # Text mode
+        user_input = st.chat_input("Ask me anything about your course material...")
+        if user_input:
+            # Add user message to chat history
+            add_to_chat_history("user", user_input)
+
+            # Call the processing logic
+            asyncio.run(process_user_input(user_input, st.session_state.chunks, st.session_state.embeddings, similarity_threshold))
+
+else:
+    st.info("👆 Please upload a course PDF in the sidebar to begin learning!")
+    st.markdown("""
+    ### How to use this Enhanced AI Tutor:
+
+    1.  **Upload your course material** (PDF) using the sidebar
+    2.  **Ask questions** about the content in the chat
+    3.  **Express confusion freely** - the tutor uses AI to understand if your confusion relates to the course material
+    4.  **Get personalized guidance** - the tutor provides targeted help based on the most relevant parts of your material
+    5.  **Toggle Voice Mode** - Use the toggle in the sidebar to switch between typing and speaking your questions, and hearing the tutor's responses!
+
+    **New Features:**
+    -   ✨ **Smart Context Detection**: Uses AI embeddings instead of hardcoded keywords
+    -   🎯 **Targeted Confusion Support**: Finds the most relevant content for your specific confusion
+    -   📚 **Universal Compatibility**: Works with any subject matter or course content
+    -   🎙️ **Voice Input**: Speak your questions to the tutor
+    -   🗣️ **Voice Output (Edge-TTS)**: Hear the tutor's responses with improved naturalness
+
+    **Note:** Your chat history is session-based and will be cleared when you close the browser.
+    """)
