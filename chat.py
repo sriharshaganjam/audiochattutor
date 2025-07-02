@@ -70,7 +70,14 @@ def text_to_speech_sync(text, voice="en-US-JennyNeural"):
         audio_bytes = loop.run_until_complete(text_to_speech_async(text, voice))
         loop.close()
         # Check for valid MP3 header and non-empty
-        if not audio_bytes or len(audio_bytes) < 4 or not audio_bytes.startswith(b'\x49\x44\x33'):
+        if (
+            not audio_bytes or len(audio_bytes) < 4 or
+            not (
+                audio_bytes.startswith(b'\x49\x44\x33') or  # ID3
+                audio_bytes.startswith(b'\xff\xf3') or     # MPEG1 Layer III
+                audio_bytes.startswith(b'\xff\xfb')        # MPEG1 Layer III (alt)
+            )
+        ):
             st.error("Edge-TTS did not return a valid MP3 audio file.")
             return None
         return audio_bytes
@@ -128,7 +135,14 @@ def text_to_speech_threaded(text, voice="en-US-JennyNeural"):
                 print(f"[EdgeTTS] First 8 bytes: {audio_data[:8]}")
                 os.unlink(temp_path)
                 # Check for valid MP3 header and non-empty
-                if not audio_data or len(audio_data) < 4 or not audio_data.startswith(b'\x49\x44\x33'):
+                if (
+                    not audio_data or len(audio_data) < 4 or
+                    not (
+                        audio_data.startswith(b'\x49\x44\x33') or  # ID3
+                        audio_data.startswith(b'\xff\xf3') or     # MPEG1 Layer III
+                        audio_data.startswith(b'\xff\xfb')        # MPEG1 Layer III (alt)
+                    )
+                ):
                     print(f"[EdgeTTS] Invalid MP3 header or empty file: {audio_data[:16]}")
                     return None
                 return audio_data
@@ -164,6 +178,12 @@ def test_edge_tts():
             
             if audio_bytes:
                 st.audio(audio_bytes, format="audio/mp3")
+                st.download_button(
+                    label="Download Test MP3",
+                    data=audio_bytes,
+                    file_name="edge_tts_test.mp3",
+                    mime="audio/mp3"
+                )
                 st.success("✅ Edge-TTS test successful!")
                 return True
             else:
@@ -480,18 +500,19 @@ def process_user_input_sync(user_input, chunks, embeddings, similarity_threshold
     if st.session_state.voice_mode and response_text:
         try:
             with st.spinner("Generating audio response..."):
-                # Try the threaded approach first (most reliable)
                 audio_bytes = text_to_speech_threaded(response_text)
-                
                 if audio_bytes:
-                    # Create audio player
                     st.audio(audio_bytes, format="audio/mp3")
+                    st.download_button(
+                        label="Download Response MP3",
+                        data=audio_bytes,
+                        file_name="ai_tutor_response.mp3",
+                        mime="audio/mp3"
+                    )
                 else:
                     st.warning("Failed to generate audio response.")
-                    
         except Exception as e:
-            st.error(f"Audio generation failed: {e}")
-            audio_bytes = None
+            st.warning(f"Audio error: {e}")
 
     # Add assistant response to chat history
     add_to_chat_history("assistant", response_text, audio_bytes)
