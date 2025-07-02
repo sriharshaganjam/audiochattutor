@@ -7,11 +7,17 @@ import json
 import time
 import tempfile
 import os
-import asyncio # Edge-TTS uses asyncio
-import edge_tts as EdgeTTS # For Text-to-Speech
-from faster_whisper import WhisperModel # For Speech-to-Text
-import base64 # For playing audio directly if needed
-import streamlit_mic_recorder as st_mic_recorder # For mic input
+import asyncio
+import edge_tts
+from faster_whisper import WhisperModel
+import base64
+import streamlit_mic_recorder as st_mic_recorder
+import nest_asyncio
+import threading
+import concurrent.futures
+
+# Apply nest_asyncio to handle nested event loops
+nest_asyncio.apply()
 
 # --- Page config must be first ---
 st.set_page_config(page_title="AI Tutor", page_icon="🎓", layout="wide")
@@ -48,64 +54,132 @@ def transcribe_audio(audio_bytes):
 
     segments, _ = whisper_model.transcribe(audio_path)
     full_text = " ".join([s.text for s in segments])
-    os.remove(audio_path) # Clean up temp file
+    os.remove(audio_path)  # Clean up temp file
     return full_text
 
-# --- FIXED Text to Audio Function using Edge-TTS ---
-async def text_to_speech_edge(text, voice="en-US-JennyNeural"):
+# --- FIXED Text to Audio Functions ---
+def text_to_speech_sync(text, voice="en-US-JennyNeural"):
     """
-    Generate speech from text using Edge-TTS and return audio bytes
+    Synchronous wrapper for Edge-TTS that works with Streamlit
+    """
+    try:
+        # Create a new event loop for this function
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        # Run the async function
+        audio_bytes = loop.run_until_complete(text_to_speech_async(text, voice))
+        loop.close()
+        # Check for valid MP3 header and non-empty
+        if not audio_bytes or len(audio_bytes) < 4 or not audio_bytes.startswith(b'\x49\x44\x33'):
+            st.error("Edge-TTS did not return a valid MP3 audio file.")
+            return None
+        return audio_bytes
+    except Exception as e:
+        st.error(f"Text-to-speech error: {e}")
+        return None
+
+async def text_to_speech_async(text, voice="en-US-JennyNeural"):
+    """
+    Async function to generate speech using Edge-TTS
     """
     try:
         # Create communication object
-        communicate = EdgeTTS.Communicate(text, voice)
+        communicate = edge_tts.Communicate(text, voice)
         
-        # Use BytesIO to capture audio data directly in memory
-        from io import BytesIO
-        audio_data = BytesIO()
+        # Use temporary file approach (more reliable)
+        with tempfile.NamedTemporaryFile(suffix=".mp3", delete=False) as tmp_file:
+            temp_path = tmp_file.name
         
-        # Stream audio data to BytesIO object
-        async for chunk in communicate.stream():
-            if chunk["type"] == "audio":
-                audio_data.write(chunk["data"])
-        
-        # Get the audio bytes
-        audio_bytes = audio_data.getvalue()
-        audio_data.close()
-        
-        return audio_bytes
-        
-    except Exception as e:
-        st.error(f"Edge-TTS error: {e}")
-        return None
-
-# Alternative implementation using temporary file (if the above doesn't work)
-async def text_to_speech_edge_alt(text, voice="en-US-JennyNeural"):
-    """
-    Alternative implementation using temporary file
-    """
-    try:
-        communicate = EdgeTTS.Communicate(text, voice)
-        
-        # Create a temporary file with a unique name
-        with tempfile.NamedTemporaryFile(suffix=".mp3", delete=False) as tmpfile:
-            temp_path = tmpfile.name
-        
-        # Save audio to the temporary file
+        # Save audio to temporary file
         await communicate.save(temp_path)
         
-        # Read the file into memory
-        with open(temp_path, 'rb') as audio_file:
-            audio_bytes = audio_file.read()
+        # Read the file
+        with open(temp_path, 'rb') as f:
+            audio_bytes = f.read()
         
-        # Clean up the temporary file
+        # Clean up
         os.unlink(temp_path)
         
         return audio_bytes
         
     except Exception as e:
-        st.error(f"Edge-TTS error: {e}")
+        print(f"Edge-TTS async error: {e}")
         return None
+
+def text_to_speech_threaded(text, voice="en-US-JennyNeural"):
+    """
+    Thread-based approach to avoid event loop conflicts, with extra diagnostics.
+    """
+    def run_tts():
+        try:
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            async def generate_audio():
+                communicate = edge_tts.Communicate(text, voice)
+                with tempfile.NamedTemporaryFile(suffix=".mp3", delete=False) as tmp_file:
+                    temp_path = tmp_file.name
+                await communicate.save(temp_path)
+                # Ensure file is closed before reading
+                with open(temp_path, 'rb') as f:
+                    audio_data = f.read()
+                # Diagnostic: print file size and first bytes
+                print(f"[EdgeTTS] Text: {text}")
+                print(f"[EdgeTTS] File size: {len(audio_data)} bytes")
+                print(f"[EdgeTTS] First 8 bytes: {audio_data[:8]}")
+                os.unlink(temp_path)
+                # Check for valid MP3 header and non-empty
+                if not audio_data or len(audio_data) < 4 or not audio_data.startswith(b'\x49\x44\x33'):
+                    print(f"[EdgeTTS] Invalid MP3 header or empty file: {audio_data[:16]}")
+                    return None
+                return audio_data
+            result = loop.run_until_complete(generate_audio())
+            loop.close()
+            return result
+        except Exception as e:
+            print(f"Threaded TTS error: {e}")
+            return None
+    with concurrent.futures.ThreadPoolExecutor() as executor:
+        future = executor.submit(run_tts)
+        try:
+            audio_bytes = future.result(timeout=30)  # 30 second timeout
+            if not audio_bytes:
+                st.error("Edge-TTS did not return a valid MP3 audio file.")
+            return audio_bytes
+        except concurrent.futures.TimeoutError:
+            st.error("Audio generation timed out")
+            return None
+        except Exception as e:
+            st.error(f"Audio generation failed: {e}")
+            return None
+
+# --- Test Function for Sidebar ---
+def test_edge_tts():
+    """Test function for the sidebar"""
+    try:
+        test_text = "This is a test of the Edge TTS system. If you can hear this, the audio is working correctly."
+        
+        with st.spinner("Testing Edge-TTS..."):
+            # Try threaded approach
+            audio_bytes = text_to_speech_threaded(test_text)
+            
+            if audio_bytes:
+                st.audio(audio_bytes, format="audio/mp3")
+                st.success("✅ Edge-TTS test successful!")
+                return True
+            else:
+                # Try sync approach as fallback
+                audio_bytes = text_to_speech_sync(test_text)
+                if audio_bytes:
+                    st.audio(audio_bytes, format="audio/mp3")
+                    st.success("✅ Edge-TTS test successful (fallback method)!")
+                    return True
+                else:
+                    st.error("❌ Edge-TTS test failed - no audio generated")
+                    return False
+                    
+    except Exception as e:
+        st.error(f"❌ Edge-TTS test failed: {e}")
+        return False
 
 # --- PDF Parsing ---
 def extract_text_from_pdf(uploaded_file):
@@ -321,7 +395,7 @@ def get_conversation_context():
 
 # --- FIXED Process user input function ---
 def process_user_input_sync(user_input, chunks, embeddings, similarity_threshold):
-    """Synchronous version of user input processing with fixed audio handling"""
+    """Updated version with fixed audio handling"""
     is_greeting_input = is_greeting(user_input)
     is_confusion_input = is_confusion_expression(user_input)
     conversation_context = get_conversation_context()
@@ -406,40 +480,18 @@ def process_user_input_sync(user_input, chunks, embeddings, similarity_threshold
     if st.session_state.voice_mode and response_text:
         try:
             with st.spinner("Generating audio response..."):
-                # Test if we're in an event loop already
-                try:
-                    loop = asyncio.get_event_loop()
-                    if loop.is_running():
-                        # We're in a running loop, create a task
-                        import nest_asyncio
-                        nest_asyncio.apply()
-                        audio_bytes = loop.run_until_complete(text_to_speech_edge(response_text))
-                    else:
-                        # No running loop, create one
-                        audio_bytes = asyncio.run(text_to_speech_edge(response_text))
-                except RuntimeError:
-                    # No event loop, create one
-                    audio_bytes = asyncio.run(text_to_speech_edge(response_text))
-            
-            if audio_bytes:
-                # Play the audio immediately
-                st.audio(audio_bytes, format="audio/mp3")
-            else:
-                st.warning("Failed to generate audio. Please check your internet connection.")
+                # Try the threaded approach first (most reliable)
+                audio_bytes = text_to_speech_threaded(response_text)
                 
+                if audio_bytes:
+                    # Create audio player
+                    st.audio(audio_bytes, format="audio/mp3")
+                else:
+                    st.warning("Failed to generate audio response.")
+                    
         except Exception as e:
             st.error(f"Audio generation failed: {e}")
-            # Try alternative method
-            try:
-                with st.spinner("Trying alternative audio generation..."):
-                    audio_bytes = asyncio.run(text_to_speech_edge_alt(response_text))
-                    if audio_bytes:
-                        st.audio(audio_bytes, format="audio/mp3")
-                    else:
-                        st.warning("Audio generation unavailable.")
-            except Exception as e2:
-                st.warning(f"Audio generation unavailable: {e2}")
-                audio_bytes = None
+            audio_bytes = None
 
     # Add assistant response to chat history
     add_to_chat_history("assistant", response_text, audio_bytes)
@@ -483,15 +535,7 @@ with st.sidebar:
         st.write(f"Voice mode: {st.session_state.voice_mode}")
         st.write(f"Chat history length: {len(st.session_state.chat_history)}")
         if st.button("Test EdgeTTS"):
-            try:
-                test_audio = asyncio.run(text_to_speech_edge("This is a test of the EdgeTTS system."))
-                if test_audio:
-                    st.audio(test_audio, format="audio/mp3")
-                    st.success("EdgeTTS test successful!")
-                else:
-                    st.error("EdgeTTS test failed - no audio returned")
-            except Exception as e:
-                st.error(f"EdgeTTS test failed: {e}")
+            test_edge_tts()
 
 # Main chat interface
 if uploaded_file and st.session_state.chunks is not None:

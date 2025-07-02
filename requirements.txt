@@ -3,7 +3,7 @@ PyMuPDF
 numpy
 sentence-transformers
 requests
-edge-tts
+edge_tts
 faster-whisper
 streamlit-mic-recorder
 nest_asyncio
