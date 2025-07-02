@@ -51,13 +51,61 @@ def transcribe_audio(audio_bytes):
     os.remove(audio_path) # Clean up temp file
     return full_text
 
-# --- Text to Audio Function using Edge-TTS ---
-async def text_to_speech_edge(text, voice="en-US-JennyNeural"): # You can change the voice here
-    communicate = EdgeTTS.Communicate(text, voice)
-    with tempfile.NamedTemporaryFile(suffix=".mp3", delete=False) as tmpfile:
-        await communicate.save(tmpfile.name)
-        audio_path = tmpfile.name
-    return audio_path
+# --- FIXED Text to Audio Function using Edge-TTS ---
+async def text_to_speech_edge(text, voice="en-US-JennyNeural"):
+    """
+    Generate speech from text using Edge-TTS and return audio bytes
+    """
+    try:
+        # Create communication object
+        communicate = EdgeTTS.Communicate(text, voice)
+        
+        # Use BytesIO to capture audio data directly in memory
+        from io import BytesIO
+        audio_data = BytesIO()
+        
+        # Stream audio data to BytesIO object
+        async for chunk in communicate.stream():
+            if chunk["type"] == "audio":
+                audio_data.write(chunk["data"])
+        
+        # Get the audio bytes
+        audio_bytes = audio_data.getvalue()
+        audio_data.close()
+        
+        return audio_bytes
+        
+    except Exception as e:
+        st.error(f"Edge-TTS error: {e}")
+        return None
+
+# Alternative implementation using temporary file (if the above doesn't work)
+async def text_to_speech_edge_alt(text, voice="en-US-JennyNeural"):
+    """
+    Alternative implementation using temporary file
+    """
+    try:
+        communicate = EdgeTTS.Communicate(text, voice)
+        
+        # Create a temporary file with a unique name
+        with tempfile.NamedTemporaryFile(suffix=".mp3", delete=False) as tmpfile:
+            temp_path = tmpfile.name
+        
+        # Save audio to the temporary file
+        await communicate.save(temp_path)
+        
+        # Read the file into memory
+        with open(temp_path, 'rb') as audio_file:
+            audio_bytes = audio_file.read()
+        
+        # Clean up the temporary file
+        os.unlink(temp_path)
+        
+        return audio_bytes
+        
+    except Exception as e:
+        st.error(f"Edge-TTS error: {e}")
+        return None
 
 # --- PDF Parsing ---
 def extract_text_from_pdf(uploaded_file):
@@ -107,16 +155,6 @@ def is_confusion_expression(user_input):
 def has_educational_context(user_input, previous_context=None, chunks=None, chunk_embeddings=None, similarity_threshold=0.15):
     """
     Check if the confusion is in context of educational material using semantic similarity.
-
-    Args:
-        user_input: The user's input expressing confusion
-        previous_context: Previous conversation context
-        chunks: Text chunks from the PDF
-        chunk_embeddings: Embeddings of the chunks
-        similarity_threshold: Minimum similarity score to consider as educational context
-
-    Returns:
-        tuple: (is_educational, max_similarity_score)
     """
     # If there's previous context from the conversation, it's likely educational
     if previous_context:
@@ -151,7 +189,6 @@ def has_educational_context(user_input, previous_context=None, chunks=None, chun
 def get_confusion_context_chunks(user_input, chunks, chunk_embeddings, k=3):
     """
     Get the most relevant chunks for confusion context, specifically for supportive responses.
-    This helps provide targeted help for the confused student.
     """
     if chunks is None or chunk_embeddings is None:
         return [], []
@@ -167,7 +204,7 @@ def get_confusion_context_chunks(user_input, chunks, chunk_embeddings, k=3):
         st.error(f"Error getting confusion context chunks: {e}")
         return [], []
 
-# --- Mistral Streaming Response (modified to capture full response) ---
+# --- Mistral Streaming Response ---
 def generate_mistral_response(context, user_question, chat_history, response_type="normal"):
     # Build conversation history for context
     if response_type == "confusion_with_context":
@@ -212,7 +249,7 @@ Course Content:
         "model": "mistral-medium",
         "messages": messages,
         "temperature": 0.3,
-        "stream": True # Keep stream for UI update, but accumulate
+        "stream": True
     }
 
     full_response_content = ""
@@ -232,10 +269,10 @@ Course Content:
                                 delta = json_data['choices'][0].get('delta', {})
                                 if 'content' in delta:
                                     full_response_content += delta['content']
-                                    yield full_response_content + "▌" # Yield for streaming display
+                                    yield full_response_content + "▌"
                         except json.JSONDecodeError:
                             continue
-            yield full_response_content # Yield final complete response
+            yield full_response_content
         else:
             st.error(f"Mistral API error: {response.status_code} - {response.text}")
             yield "I apologize, but I'm having trouble processing your request right now. Please try again."
@@ -254,39 +291,37 @@ def initialize_session_state():
     if "last_topic_context" not in st.session_state:
         st.session_state.last_topic_context = None
     if "voice_mode" not in st.session_state:
-        st.session_state.voice_mode = False # Default to text mode
+        st.session_state.voice_mode = False
     if "uploaded_file_name" not in st.session_state:
         st.session_state.uploaded_file_name = None
     if "audio_input_key" not in st.session_state:
-        st.session_state.audio_input_key = 0  # For resetting mic recorder
+        st.session_state.audio_input_key = 0
 
-def add_to_chat_history(role, content, audio_path=None):
-    st.session_state.chat_history.append({"role": role, "content": content, "audio_path": audio_path})
+def add_to_chat_history(role, content, audio_bytes=None):
+    st.session_state.chat_history.append({"role": role, "content": content, "audio_bytes": audio_bytes})
 
 def display_chat_history():
     for message in st.session_state.chat_history:
         if message["role"] == "user":
             with st.chat_message("user"):
                 st.write(message["content"])
-                # Don't display user audio in history to avoid clutter
         else:
             with st.chat_message("assistant"):
                 st.write(message["content"])
-                if message.get("audio_path"):
-                    st.audio(message["audio_path"], format="audio/mp3", start_time=0)
+                if message.get("audio_bytes"):
+                    st.audio(message["audio_bytes"], format="audio/mp3")
 
 def get_conversation_context():
     """Get recent conversation context to understand if confusion is in educational context"""
     if len(st.session_state.chat_history) >= 2:
-        # Look at the last few exchanges
-        recent_messages = st.session_state.chat_history[-4:]  # Last 4 messages
+        recent_messages = st.session_state.chat_history[-4:]
         recent_text = " ".join([msg["content"] for msg in recent_messages])
         return recent_text
     return None
 
-# --- Process user input function (synchronous version) ---
+# --- FIXED Process user input function ---
 def process_user_input_sync(user_input, chunks, embeddings, similarity_threshold):
-    """Synchronous version of user input processing"""
+    """Synchronous version of user input processing with fixed audio handling"""
     is_greeting_input = is_greeting(user_input)
     is_confusion_input = is_confusion_expression(user_input)
     conversation_context = get_conversation_context()
@@ -307,7 +342,7 @@ def process_user_input_sync(user_input, chunks, embeddings, similarity_threshold
     max_similarity = max(similarities) if len(similarities) > 0 else 0
 
     response_text = ""
-    audio_output_path = None
+    audio_bytes = None
 
     if is_greeting_input:
         response_text = "Hello! I'm excited to help you explore and understand your course material. I'm here to guide you through the content with questions and hints to help you learn effectively. What topic from your uploaded material would you like to dive into?"
@@ -331,16 +366,16 @@ def process_user_input_sync(user_input, chunks, embeddings, similarity_threshold
             for chunk_of_text in generate_mistral_response(
                 context,
                 user_input,
-                st.session_state.chat_history[:-1], # Pass chat history excluding current user message
+                st.session_state.chat_history[:-1],
                 response_type="confusion_with_context"
             ):
-                full_response = chunk_of_text.replace("▌", "") # Remove cursor
+                full_response = chunk_of_text.replace("▌", "")
                 message_placeholder.write(chunk_of_text)
-                time.sleep(0.01) # Simulate streaming
+                time.sleep(0.01)
             response_text = full_response
-            message_placeholder.write(response_text) # Final write without cursor
+            message_placeholder.write(response_text)
 
-    elif max_similarity >= 0.1:  # Question relates to course content
+    elif max_similarity >= 0.1:
         context = "\n\n".join(top_chunks)
         st.session_state.last_topic_context = context
 
@@ -350,13 +385,13 @@ def process_user_input_sync(user_input, chunks, embeddings, similarity_threshold
             for chunk_of_text in generate_mistral_response(
                 context,
                 user_input,
-                st.session_state.chat_history[:-1] # Pass chat history excluding current user message
+                st.session_state.chat_history[:-1]
             ):
-                full_response = chunk_of_text.replace("▌", "") # Remove cursor
+                full_response = chunk_of_text.replace("▌", "")
                 message_placeholder.write(chunk_of_text)
-                time.sleep(0.01) # Simulate streaming
+                time.sleep(0.01)
             response_text = full_response
-            message_placeholder.write(response_text) # Final write without cursor
+            message_placeholder.write(response_text)
 
     else:
         if is_confusion_input:
@@ -367,32 +402,47 @@ def process_user_input_sync(user_input, chunks, embeddings, similarity_threshold
         with st.chat_message("assistant"):
             st.write(response_text)
 
-    # Handle audio generation if in voice mode
+    # FIXED: Handle audio generation if in voice mode
     if st.session_state.voice_mode and response_text:
         try:
             with st.spinner("Generating audio response..."):
-                # Create a new event loop for this context
-                loop = asyncio.new_event_loop()
-                asyncio.set_event_loop(loop)
-                audio_output_path = loop.run_until_complete(text_to_speech_edge(response_text))
-                loop.close()
+                # Test if we're in an event loop already
+                try:
+                    loop = asyncio.get_event_loop()
+                    if loop.is_running():
+                        # We're in a running loop, create a task
+                        import nest_asyncio
+                        nest_asyncio.apply()
+                        audio_bytes = loop.run_until_complete(text_to_speech_edge(response_text))
+                    else:
+                        # No running loop, create one
+                        audio_bytes = asyncio.run(text_to_speech_edge(response_text))
+                except RuntimeError:
+                    # No event loop, create one
+                    audio_bytes = asyncio.run(text_to_speech_edge(response_text))
             
-            # Read the audio file into memory before playing and cleaning up
-            with open(audio_output_path, 'rb') as audio_file:
-                audio_bytes = audio_file.read()
-            
-            # Play the audio using bytes
-            st.audio(audio_bytes, format="audio/mp3", start_time=0)
-            
-            # Clean up temp file
-            os.remove(audio_output_path)
-            audio_output_path = audio_bytes  # Store bytes for history
+            if audio_bytes:
+                # Play the audio immediately
+                st.audio(audio_bytes, format="audio/mp3")
+            else:
+                st.warning("Failed to generate audio. Please check your internet connection.")
+                
         except Exception as e:
-            st.error(f"Failed to generate audio response with Edge-TTS: {e}. Please ensure you have an active internet connection.")
-            audio_output_path = None
+            st.error(f"Audio generation failed: {e}")
+            # Try alternative method
+            try:
+                with st.spinner("Trying alternative audio generation..."):
+                    audio_bytes = asyncio.run(text_to_speech_edge_alt(response_text))
+                    if audio_bytes:
+                        st.audio(audio_bytes, format="audio/mp3")
+                    else:
+                        st.warning("Audio generation unavailable.")
+            except Exception as e2:
+                st.warning(f"Audio generation unavailable: {e2}")
+                audio_bytes = None
 
     # Add assistant response to chat history
-    add_to_chat_history("assistant", response_text, audio_output_path)
+    add_to_chat_history("assistant", response_text, audio_bytes)
 
 # --- Main Streamlit UI ---
 st.title("🎓 AI Tutor - Learn with Guidance")
@@ -410,7 +460,7 @@ with st.sidebar:
 
     if uploaded_file:
         if st.session_state.chunks is None or st.session_state.uploaded_file_name != uploaded_file.name:
-            st.session_state.uploaded_file_name = uploaded_file.name # Store file name to detect new upload
+            st.session_state.uploaded_file_name = uploaded_file.name
             with st.spinner("Processing your PDF..."):
                 full_text = extract_text_from_pdf(uploaded_file)
                 st.session_state.chunks = chunk_text(full_text)
@@ -428,6 +478,21 @@ with st.sidebar:
     st.session_state.voice_mode = st.toggle("Enable Voice Mode", value=st.session_state.voice_mode,
                                             help="Toggle between typing and speaking to the tutor.")
 
+    # Debug section
+    with st.expander("🔧 Debug Info"):
+        st.write(f"Voice mode: {st.session_state.voice_mode}")
+        st.write(f"Chat history length: {len(st.session_state.chat_history)}")
+        if st.button("Test EdgeTTS"):
+            try:
+                test_audio = asyncio.run(text_to_speech_edge("This is a test of the EdgeTTS system."))
+                if test_audio:
+                    st.audio(test_audio, format="audio/mp3")
+                    st.success("EdgeTTS test successful!")
+                else:
+                    st.error("EdgeTTS test failed - no audio returned")
+            except Exception as e:
+                st.error(f"EdgeTTS test failed: {e}")
+
 # Main chat interface
 if uploaded_file and st.session_state.chunks is not None:
     st.markdown("### 💬 Chat with your AI Tutor")
@@ -438,7 +503,6 @@ if uploaded_file and st.session_state.chunks is not None:
     if st.session_state.voice_mode:
         st.info("🎙️ Speak your question after pressing 'Record'.")
         
-        # Use dynamic key to reset the mic recorder after each use
         audio_input = st_mic_recorder.mic_recorder(
             start_prompt="🔴 Record", 
             stop_prompt="⏹ Stop", 
@@ -448,33 +512,24 @@ if uploaded_file and st.session_state.chunks is not None:
         if audio_input:
             with st.spinner("Transcribing audio..."):
                 user_input = transcribe_audio(audio_input["bytes"])
-            st.write(f"**You said:** {user_input}") # Show transcribed text to user
+            st.write(f"**You said:** {user_input}")
 
-            # Display user message immediately
             with st.chat_message("user"):
                 st.write(user_input)
 
-            # Add user message to chat history (without audio to avoid clutter)
             add_to_chat_history("user", user_input)
-
-            # Process the input
             process_user_input_sync(user_input, st.session_state.chunks, st.session_state.embeddings, similarity_threshold)
             
-            # Increment the key to reset the mic recorder for next input
             st.session_state.audio_input_key += 1
-            st.rerun()  # Refresh to show the new mic recorder
+            st.rerun()
 
-    else: # Text mode
+    else:
         user_input = st.chat_input("Ask me anything about your course material...")
         if user_input:
-            # Display user message immediately
             with st.chat_message("user"):
                 st.write(user_input)
 
-            # Add user message to chat history
             add_to_chat_history("user", user_input)
-
-            # Process the input
             process_user_input_sync(user_input, st.session_state.chunks, st.session_state.embeddings, similarity_threshold)
 
 else:

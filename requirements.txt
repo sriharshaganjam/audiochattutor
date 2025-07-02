@@ -6,3 +6,4 @@ requests
 edge-tts
 faster-whisper
 streamlit-mic-recorder
+nest_asyncio
